@@ -1,4 +1,15 @@
-# 基于Zephir构建快速的PHP扩展框架或组件
+![Zephir console](../_media/zephir-cover.png)
+
+
+## 关于我
+
+ * 2007 年接触网页三剑客，其实学的 ps，学会基本的flash制作，dw网页表格布局和 ps
+ * 2009 初学习 《CSS: The Missing Manual》，《精通 PHP+MYSQL 应用开发.人民邮电出版社》而与PHP结缘
+ * 开源爱好者
+
+![Zephir console](../_media/windsforce-logo.png)
+
+## Zephir 简介
 
 ![Zephir console](../_media/zephir-logo.png)
 
@@ -19,7 +30,6 @@ Phalcon 是开源、全功能栈、使用 C 扩展编写、针对高性能优化
  * gcc version 5.4.0 20160609
  * Ubuntu 16.04.2 LTS
  * zephir-0.10.7
-
 
 ![Zephir console](../_media/zephir-console.png)
 
@@ -42,6 +52,172 @@ $/path/to/phpize
 $./configure --with-php-config=/path/to/php-config
 $make && make install
 ```
+
+ * php-config 在编译安装 PHP 会将 PHP 的信息写入 php-config,安装路径，编译参数，头文件等
+ * phpize 扩展开发比用的一个脚本，主要用于操作复杂的 autoconf/automake等命令用于生成 configure 文件
+
+
+### 对比传统 PHP 扩展开发
+
+```
+./ext_skel --extname=queryyetsimple
+```
+
+![Zephir console](../_media/ext-skel.png)
+
+ * config.m4 autoconf 规则的编译配置文件
+ * config.w32 windows 环境的配置
+ * queryyetsimple.c 扩展源代码
+ * php_queryyetsimple.h 头文件
+ * queryyetsimple.php 用于测试扩展在 PHP 是否可用
+ * tests 测试用例 make test 将执行
+
+### PHP 扩展（插件）钩子函数
+
+PHP 扩展分为 PHP 扩展和 Zend 扩展，Zend 根据 php_module_startup 将 php.ini 中的 dhb.so 加入到PHP 中。
+
+PHP 为扩展开发定义了 5 个钩子函数来介入 PHP 的不同生命周期，定义完成设置 zend_module_entry 即可。
+
+![Zephir console](../_media/php-life.png)
+
+
+```
+zend_module_entry dhb_module_entry = {
+    STANDARD_MODULE_HEADER_EX,
+    NULL,
+    NULL,
+    PHP_DHB_EXTNAME,、//扩展名字
+    php_dhb_functions,// 扩展函数列表
+    PHP_MINIT(dhb),//模板初始化阶段
+#ifndef ZEPHIR_RELEASE
+    PHP_MSHUTDOWN(dhb),//模块关闭阶段
+#else
+    NULL,
+#endif
+    PHP_RINIT(dhb),//请求初始化阶段 打印 phpinfo()信息
+    PHP_RSHUTDOWN(dhb),//请求结束阶段
+    PHP_MINFO(dhb),
+    PHP_DHB_VERSION,// 扩展版本
+    ZEND_MODULE_GLOBALS(dhb),
+    PHP_GINIT(dhb),
+    PHP_GSHUTDOWN(dhb),
+    NULL,
+    STANDARD_MODULE_PROPERTIES_EX
+};
+```
+
+#### 模板初始化阶段
+
+除了注册类，扩展在此阶段可以覆盖 PHP 编译、执行的两个函数指针 zend_compile_file、zend_execute_ex，从而接管 PHP 的编译和执行。
+
+ * opcache 的原理就是自定义了编译函数，对编译结果进行缓存。
+ * PHP-AOP 无侵入式面向切面变成也是在这个阶段介入到生成 PHP 抽象语法树动态插入节点。
+ * swoole (PHP 网络通信引擎) 扩展也是在这个地方接管了 PHP，进入 Epoll 轮询。
+ * PHP 源代码加密扩展
+
+epoll是Linux内核提供的一个多路复用I/O模型，它提供和poll函数一样的功能：监控多个文件描述符是否处于I/O就绪状态（可读、可写）。这就是异步最核心的表现：程序不是主动等待一个描述符可以操作，而是当描述符可操作时由系统提醒程序可以操作了，程序在被提醒前可以去做其他的事情
+
+![Zephir console](../_media/linux-swoole.png)
+
+注册扩展类。
+
+
+```
+static PHP_MINIT_FUNCTION(dhb)
+{
+    REGISTER_INI_ENTRIES();
+    zephir_module_init();
+    ZEPHIR_INIT(Dhb_Di_IContainer);
+    ZEPHIR_INIT(Dhb_Kernel_IKernel);
+    ZEPHIR_INIT(Dhb_Log_ILog);
+    ZEPHIR_INIT(Dhb_Option_IOption);
+    ZEPHIR_INIT(Dhb_Router_IRouter);
+    ZEPHIR_INIT(Dhb_Http_Bag);
+    ZEPHIR_INIT(Dhb_Http_Response);
+    ZEPHIR_INIT(Dhb_Di_Container);
+    ZEPHIR_INIT(Dhb_Di_NormalizeException);
+    ZEPHIR_INIT(Dhb_Di_Provider);
+    ZEPHIR_INIT(Dhb_Hello_World);
+    ZEPHIR_INIT(Dhb_Http_HeaderBag);
+    ZEPHIR_INIT(Dhb_Http_JsonResponse);
+    ZEPHIR_INIT(Dhb_Http_Request);
+    ZEPHIR_INIT(Dhb_Kernel_Kernel);
+    ZEPHIR_INIT(Dhb_Log_Log);
+    ZEPHIR_INIT(Dhb_Option_Option);
+    ZEPHIR_INIT(Dhb_Router_Router);
+    return SUCCESS;
+}
+```
+
+#### 请求初始化阶段
+
+此函数在编译、执行之前回调，fpm 模式下每一个请求都是一个 request,可以对数据进行解密解析。
+
+```
+static PHP_RINIT_FUNCTION(dhb)
+{
+
+    zend_dhb_globals *dhb_globals_ptr;
+#ifdef ZTS
+    tsrm_ls = ts_resource(0);
+#endif
+    dhb_globals_ptr = ZEPHIR_VGLOBAL;
+
+    php_zephir_init_globals(dhb_globals_ptr TSRMLS_CC);
+    zephir_initialize_memory(dhb_globals_ptr TSRMLS_CC);
+
+    zephir_init_static_properties_Dhb_Http_Response(TSRMLS_C);
+    zephir_init_static_properties_Dhb_Router_Router(TSRMLS_C);
+
+    return SUCCESS;
+}
+```
+
+#### 请求结束阶段
+
+对应请开始，请求结束时调用,对应 php_request_shutdown。
+
+```
+static PHP_RSHUTDOWN_FUNCTION(dhb)
+{
+    
+    zephir_deinitialize_memory(TSRMLS_C);
+    return SUCCESS;
+}
+```
+
+#### post deactviate 阶段
+
+晚于请求结束阶段执行， main/mian.c
+
+```
+/* {{{ php_request_shutdown
+ */
+void php_request_shutdown(void *dummy)
+{
+    ....
+
+    /* 11. Call all extensions post-RSHUTDOWN functions */
+    zend_try {
+        zend_post_deactivate_modules();
+    } zend_end_try();
+}
+```
+
+
+#### 模块关闭阶段
+
+进入模块清理阶段。
+
+```
+static PHP_MSHUTDOWN_FUNCTION(dhb)
+{
+    zephir_deinitialize_memory(TSRMLS_C);
+    UNREGISTER_INI_ENTRIES();
+    return SUCCESS;
+}
+```
+
 
 ### 项目配置文件
 
@@ -330,7 +506,7 @@ todo
 
 ```
 container.zep 容器
-container.zep 容器接口
+icontainer.zep 容器接口
 normalizeexception.zep 容器异常
 provider.zep 容器服务提供者
 ```
@@ -448,7 +624,7 @@ OK (39 tests, 88 assertions)
 
 ```
 kernel.zep 内核
-headerbag.zep 内核接口
+ikernel.zep 内核接口
 ```
 
 为 Kernel 组件编写单元测试文件
@@ -819,7 +995,7 @@ acton class with handle
 访问地址 `http://dhbframework.cn/foo/bar/c/a`
 位于 `/data/codes/dhb/app/App/App/Controller/Foo/Bar/C.php`
 
-```
+```php
 <?php declare(strict_types=1);
 
 namespace App\App\Controller\Foo\Bar;
@@ -844,7 +1020,7 @@ Hello i am here App\App\Controller\Foo\Bar\A->c()
 访问地址 `http://dhbframework.cn/goods/111/show`
 位于 `/data/codes/dhb/app/App/App/Controller/Goods.php`
 
-```
+```php
 <?php declare(strict_types=1);
 
 namespace App\App\Controller;
@@ -870,4 +1046,562 @@ class Goods
 
 ## 框架接入日志服务
 
-。。。
+位于 `/data/codes/dhb/www/index.php`,内容如下
+
+```php
+use Dhb\Log\ILog;
+use Dhb\Log\Log;
+
+...
+
+$container->singleton('log', new Log([
+    'path' => dirname(__DIR__) . '/runtime/log'
+]));
+
+$container->alias('log', [
+    ILog::class,
+    Log::class
+]);
+```
+
+
+位于 `/data/codes/dhb/app/App/App/Controller/Home.php`
+
+```php
+<?php declare(strict_types=1);
+
+namespace App\App\Controller;
+
+class Home
+{
+
+    public function handle()
+    {
+        app('log')->info('hellworld', ['foo' => 'bar']);
+
+        return ['home' => 'world'];
+    }
+}
+```
+
+访问地址 `http://dhbframework.cn`,刷新几次。
+
+![Zephir console](../_media/log-service.png)
+
+
+## 接入配置服务
+
+位于 `/data/codes/dhb/option`,两个配置文件 app.php,extend.php
+
+```php
+<?php 
+
+return [
+    // true or false
+    'debug' => true,
+
+    'environment' => 'development'
+];
+```
+
+and
+
+```php
+<?php 
+
+return [
+    'foo' => 'bar'
+];
+```
+
+将这些配置注入到配置组件中
+
+位于 `/data/codes/dhb/www/index.php`,内容如下
+
+```php
+use Dhb\Option\IOption;
+use Dhb\Option\Option;
+
+...
+
+$container->singleton('option', 
+    call_user_func(function() {
+        $data = [];
+
+        foreach(glob(dirname(__DIR__) . '/option/*.php') as $file) {
+            $type = substr(basename($file), 0, -4);
+            $data[$type] = (array)include $file;
+        }
+
+        return new Option($data);
+    })
+);
+
+$container->alias('option', [
+    IOption::class,
+    Option::class
+]);
+
+function option(?string $name = null)
+{
+    return null === $name ? app('option') : app('option')->get($name);
+}
+
+function debug(): bool
+{
+    return option('debug');
+}
+
+/*
+var_dump(debug());// bool(true)
+print_r(option('environment'));// development
+print_r(option('extend\foo')); // bar
+*/
+```
+
+## 接管 PHP 异常和错误
+
+忽略不存在类和函数编译警告
+
+
+```
+"nonexistent-function": false,
+"nonexistent-class": false,
+```
+
+
+为了后期方便调试，dhb/app 加入调试包
+
+```
+ "nunomaduro/collision": "~2.0" 
+```
+
+定义 Dhb\Kernel\HttpException 异常
+
+```
+namespace Dhb\Kernel;
+
+use Exception;
+use RuntimeException;
+
+class HttpException extends RuntimeException
+{
+
+    /**
+     * HTTP 状态
+     *
+     * @var int
+     */
+    protected statusCode {
+        get, set
+    };
+
+    /**
+     * Header
+     *
+     * @var array
+     */
+    protected headers = [] {
+        get, set
+    };
+
+    /**
+     * 构造函数
+     *
+     * @param int $statusCode
+     * @param string|null $message
+     * @param integer $code
+     * @param \Exception $previous
+     * @return void
+     */
+    public function __construct(int statusCode, var message = null, int code = 0, <Exception> previous = null)
+    {
+        let this->statusCode = statusCode;
+        parent::__construct(message, code, previous);
+    }
+}
+```
+
+定义异常处理，异常处理接入日志 Dhb\Kernel\Runtime 和 Dhb\Kernel\IRuntime
+
+```
+namespace Dhb\Kernel;
+
+use Dhb\Http\Response;
+
+interface IRuntime
+{
+
+    /**
+     * 响应异常
+     *
+     * @param \Exception $e
+     * @return \Dhb\Http\Response
+     */
+    public function handle(var e) -> <Response>;
+}
+```
+
+修改 Dhb\Kernel\Kernel 接管异常,首页将异常处理加入容器
+
+```
+use Dhb\Kernel\IRuntime;
+use Dhb\Kernel\Runtime;
+
+...
+
+$container->singleton(IRuntime::class, Runtime::class);
+```
+
+修改首页控制器，抛个异常
+
+```
+ //throw new \Dhb\Kernel\HttpException(404, '404 not found');
+ throw new \Exception('hello exception');
+```
+
+
+修改 option/app.php 中的 debug 来查看异常的不同展示，同时看看日志是否记录了错误。
+
+
+到这里整个框架完毕。
+
+## zephir 与 PHP 对比与调试
+
+语法非常接近，可以复用所有 PHP 的对象知识几乎，调用 PHP 内置方法。没有美元符号，变量使用必须要定义，定义多了会有警告。
+
+```
+var a;
+let a = 1;
+let a++;
+```
+
+不存在内存管理和指针（PHP 引用&）
+
+支持返回值和参数类型提示符,名字传值
+
+```
+public function setConnection(connection) -> void
+{
+    let this->_connection = connection;
+}
+
+public function doSum4(int a, int b)
+{
+    return a + b;
+}
+
+class Image
+{
+    public function chop(width = 600, height = 400, x = 0, y = 0)-> void
+    {
+        //...
+    }
+}
+
+i->chop(height: 200, width: 100);
+```
+
+数组差异,关联数组是map ，js对象这种
+
+```
+let myArray = [1, 2, 3];
+
+//Double colon must be used to define hashes' keys
+let myHash = ["first": 1, "second": 2, "third": 3];
+```
+
+
+不支持 trait,可以采用接口代替
+
+支持简单闭包（不支持this和use），可以使用 Closure::fromCallable 代替
+
+```
+protected function caches()
+{
+    this->container->singleton("caches", Closure::fromCallable([this, "cachesClosure"]));
+}
+
+protected function cachesClosure(var project)
+{
+    return new Manager(project);
+}
+```
+
+支持动态和静态变量
+
+```
+int a,b;
+array c;
+var d;
+```
+
+getter/setter支持
+
+```
+namespace App;
+
+class MyClass
+{
+    protected someProperty = 10 {
+        set, get
+    };
+}
+```
+
+只能以对象呈现,伪一切皆对象,内置方法
+
+```
+s->length()
+s->trim()
+s->lower()
+a->join(" ")
+a->keys()
+ch->toHex()
+i->abs()
+```
+
+instanceof 不支持右动态变量
+
+```
+if (! self::zephirInstanceof) {
+        eval("if (! function_exists('zephir_instanceof')) {
+            function zephir_instanceof($value, $type) {
+                return $value instanceof $type;
+            }
+        }");
+
+        let self::zephirInstanceof = true;
+    }
+
+return zephir_instanceof(value, type);
+```
+
+不支持 switch(true) 这种只能以 if elseif 来搞
+
+模板引擎需要用，动态添加变量到符号表
+
+```
+for key, value in vars {
+    let {key} = value;
+}
+```
+
+动态指定属性不支持 unset 
+
+```
+public function remove($name)
+{
+    $name = $this->normalize($name);
+
+    $prop = [
+        'services',
+        'instances',
+        'singletons'
+    ];
+
+    foreach ($prop as $item) {
+        if (isset($this->{$item}[$name])) {
+            unset($this->{$item}[$name]);
+        }
+    }
+}
+
+vs
+
+public function remove(var name)
+{
+    let name = this->normalize(name);
+
+    if isset this->services[name] {
+        unset this->services[name];
+    }
+
+    if isset this->instances[name] {
+        unset this->instances[name];
+    }
+
+    if isset this->instances[name] {
+        unset this->instances[name];
+    }
+}
+```
+
+绑定闭包到类与PHP有点出入，无法访问 protected和private属性
+
+```
+/**
+ * __callStatic 魔术方法隐射
+ * 由于 zephir 对应的 C 扩展版本不支持对象内绑定 class
+ * 即 Closure::bind($closures, null, get_called_class())
+ * 为保持功能一致，所以取消 PHP 版本的静态闭包绑定功能
+ *
+ * @param string $method
+ * @param array $args
+ * @return mixed
+ */
+public static function callStaticMacro(string method, array args)
+{
+    if self::hasMacro(method) {
+        return call_user_func_array(self::macro[method], args);
+    }
+
+    throw new BadMethodCallException(sprintf("Method %s is not exits.", method));
+}
+
+/**
+ * __call 魔术方法隐射
+ * 由于 zephir 对应的 C 扩展版本不支持对象内绑定 class
+ * 即 Closure::bind($closures, null, get_called_class())
+ * 为保持功能一致，所以绑定对象但是不绑定作用域，即可以使用 $this,只能访问 public 属性
+ * 
+ * @param string $method
+ * @param array $args
+ * @return mixed
+ */
+public function callMacro(string method, array args)
+{
+    if self::hasMacro(method) {
+        if self::macro[method] instanceof Closure {
+            return call_user_func_array(self::macro[method]->bindTo(this), args);
+        } else {
+            return call_user_func_array(self::macro[method], args);
+        }
+    }
+
+    throw new BadMethodCallException(sprintf("Method %s is not exits.", method));
+}
+```
+
+eval 动态插入符号表不支持，需要调用 PHP自身
+
+```
+if (! self::zephirAssign) {
+    eval("if (! function_exists('zephir_assign')) {
+        function zephir_assign($value, $evals) {
+            eval($evals);
+            return $value;
+        }
+    }");
+
+    let self::zephirAssign = true;
+}
+```
+
+不支持函数内置静态变量，只支持类属性
+
+```
+public function share(Closure $closures)
+{
+    return function ($container) use ($closures) {
+        static $obj;
+
+        if (is_null($obj)) {
+            $obj = $closures($container);
+        }
+
+        return $obj;
+    };
+}
+
+vs
+
+public function share(<Closure> closures)
+{
+    let this->shareUseClosures = closures;
+
+    return Closure::fromCallable([this, "shareClosure"]);
+}
+
+protected function shareClosure(var container)
+{
+    var hash, obj;
+
+    let hash = spl_object_hash(this->shareUseClosures);
+
+    if fetch obj, this->shareClosure[hash] {
+        return obj;
+    }
+
+    let obj = call_user_func(this->shareUseClosures, container);
+    let this->shareClosure[hash] = obj;
+
+    return obj;
+}
+```
+
+
+### 调试
+
+
+复用 PHP 自带的技术
+
+```
+int a = 1;
+
+dump(a);/ symfony/var_dump
+var_dump(a);
+print_r(a);
+```
+
+编译器能够检测大部分错误,偶尔有时候会 gcc 编译完成报错，能够大约定位
+
+```
+compile.log
+compile-errors.log
+```
+
+## PHP 原生扩展开发渐进
+
+时间有限，到这里了哈，主要是根据 phalcon7 来逐步深入学习。
+
+网站: http://www.myleftstudio.com/
+
+内核开发API: http://www.myleftstudio.com/internals/
+
+Phalcon API 在 Zend API 的基础上实现了 phalcon_call_method_with_params 函数，并以此为基础定义了宏 PHALCON_CALL_FUNCTION，利用这些 API 可以很轻松的调用内核及自定义函数。
+
+```
+// $length = strlen(some_variable);
+PHALCON_CALL_FUNCTION(&length, "strlen", &some_variable);
+
+// Calling substr() with its 3 arguments returning the substring into "part"
+PHALCON_CALL_FUNCTION(&part, "substr", &some_variable, &start, &length);
+
+// Calling ob_start(), this function does not return anything
+PHALCON_CALL_FUNCTION(NULL, "ob_start");
+
+// Closing a file with fclose
+PHALCON_CALL_FUNCTION(NULL, "fclose", file_handler);
+```
+
+and 
+
+```
+ZVAL_STRING(&mode, "w");
+
+PHALCON_CALL_FUNCTION(&file_handler, "fopen", &file_path, &mode);
+
+if (PHALCON_IS_NOT_FALSE(&file_handler)) {
+        ZVAL_STRING(&text, "fopen example");
+
+        PHALCON_CALL_FUNCTION(NULL, "fputs", &file_handler, &text);
+
+        PHALCON_CALL_FUNCTION(NULL, "fclose", &file_handler);
+}
+
+vs 
+
+<?php
+
+$fp = fopen($file_path, "w");
+if($fp){
+        fputs($fp, "fopen example");
+        fclose($fp);
+}
+```
+
+## 完毕
+
+Thank s!
+
